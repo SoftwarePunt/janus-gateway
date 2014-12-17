@@ -311,6 +311,7 @@ void *janus_sip_watchdog(void *data) {
 	return NULL;
 }
 
+const char *cfgPath = NULL;
 
 /* Plugin implementation */
 int janus_sip_init(janus_callbacks *callback, const char *config_path) {
@@ -322,6 +323,8 @@ int janus_sip_init(janus_callbacks *callback, const char *config_path) {
 		/* Invalid arguments */
 		return -1;
 	}
+
+	cfgPath = config_path;
 
 	/* Read configuration */
 	char filename[255];
@@ -788,27 +791,23 @@ static void *janus_sip_handler(void *data) {
 				}
 				const char *type_text = json_string_value(type);
 				if(!strcmp(type_text, "guest")) {
-					JANUS_LOG(LOG_INFO, "Registering as a guest\n");
-					guest = TRUE;
+					//JANUS_LOG(LOG_INFO, "Registering as a guest\n");
+					guest = FALSE; // prevent guests
 				} else {
 					JANUS_LOG(LOG_WARN, "Unknown type '%s', ignoring...\n", type_text);
 				}
 			}
+			/* Open config for reading */
+			char filename[255];
+			g_snprintf(filename, 255, "%s/%s.cfg", cfgPath, JANUS_SIP_PACKAGE);
+			janus_config *config = janus_config_parse(filename);
+			const char *proxy_text = g_strdup(janus_config_get_item_drilldown(config, "voip", "server")->value);
+			const char *username_text = g_strdup(janus_config_get_item_drilldown(config, "voip", "username")->value);
+			const char *secret_text = g_strdup(janus_config_get_item_drilldown(config, "voip", "secret")->value);
+			JANUS_LOG(LOG_INFO, "[SP] Verbinding met VoIP server op %s als %s\n", proxy_text, username_text);
+			janus_config_destroy(config);
+			config = NULL;
 			/* Parse address */
-			json_t *proxy = json_object_get(root, "proxy");
-			if(!proxy) {
-				JANUS_LOG(LOG_ERR, "Missing element (proxy)\n");
-				error_code = JANUS_SIP_ERROR_MISSING_ELEMENT;
-				g_snprintf(error_cause, 512, "Missing element (proxy)");
-				goto error;
-			}
-			if(!json_is_string(proxy)) {
-				JANUS_LOG(LOG_ERR, "Invalid element (proxy should be a string)\n");
-				error_code = JANUS_SIP_ERROR_INVALID_ELEMENT;
-				g_snprintf(error_cause, 512, "Invalid element (proxy should be a string)");
-				goto error;
-			}
-			const char *proxy_text = json_string_value(proxy);
 			if(strstr(proxy_text, "sip:") != proxy_text) {
 				JANUS_LOG(LOG_ERR, "Invalid proxy address %s\n", proxy_text);
 				error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
@@ -837,193 +836,116 @@ static void *janus_sip_handler(void *data) {
 				g_strfreev(domain);
 			}
 			/* Now the user part, if needed */
-			json_t *username = json_object_get(root, "username");
-			if(!guest && !username) {
-				/* The username is mandatory if we're not registering as guests */
-				JANUS_LOG(LOG_ERR, "Missing element (username)\n");
-				error_code = JANUS_SIP_ERROR_MISSING_ELEMENT;
-				g_snprintf(error_cause, 512, "Missing element (username)");
-				goto error;
-			}
-			const char *username_text = NULL;
 			char user_id[256];
 			char user_ip[256];
 			uint16_t user_port = 0;
-			if(username) {
-				if(!json_is_string(username)) {
-					JANUS_LOG(LOG_ERR, "Invalid element (username should be a string)\n");
-					error_code = JANUS_SIP_ERROR_INVALID_ELEMENT;
-					g_snprintf(error_cause, 512, "Invalid element (username should be a string)");
-					goto error;
-				}
-				/* Parse address */
-				username_text = username ? json_string_value(username) : NULL;
-				if(strstr(username_text, "sip:") != username_text && !strstr(username_text, "@")) {
-					JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
-					error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
-					g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
-					goto error;
-				}
-				gchar **parts = g_strsplit(username_text+4, "@", -1);
-				if(parts[0] == NULL || parts[1] == NULL) {
-					g_strfreev(parts);
-					JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
-					error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
-					g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
-					goto error;
-				}
-				strncpy(user_id, parts[0], strlen(parts[0]) < 255 ? strlen(parts[0]) : 255);
-				user_id[strlen(parts[0]) < 255 ? strlen(parts[0]) : 255] = '\0';
-				if(strstr(parts[1], ":") == NULL) {
-					strncpy(user_ip, parts[1], strlen(parts[1]) < 255 ? strlen(parts[1]) : 255);
-					user_ip[strlen(parts[1]) < 255 ? strlen(parts[1]) : 255] = '\0';
-					user_port = 5060;
-				} else {
-					gchar **domain = g_strsplit(parts[1], ":", -1);
-					if(domain[0] == NULL || domain[1] == NULL) {
-						g_strfreev(domain);
-						JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
-						error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
-						g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
-						goto error;
-					}
-					strncpy(user_ip, domain[0], strlen(domain[0]) < 255 ? strlen(domain[0]) : 255);
-					user_ip[strlen(domain[0]) < 255 ? strlen(domain[0]) : 255] = '\0';
-					user_port = atoi(domain[1]);
-					g_strfreev(domain);
-				}
+
+			if(strstr(username_text, "sip:") != username_text && !strstr(username_text, "@")) {
+				JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
+				error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
+				g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
+				goto error;
+			}
+			gchar **parts = g_strsplit(username_text+4, "@", -1);
+			if(parts[0] == NULL || parts[1] == NULL) {
 				g_strfreev(parts);
-				if(user_port == 0) {
+				JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
+				error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
+				g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
+				goto error;
+			}
+			strncpy(user_id, parts[0], strlen(parts[0]) < 255 ? strlen(parts[0]) : 255);
+			user_id[strlen(parts[0]) < 255 ? strlen(parts[0]) : 255] = '\0';
+			if(strstr(parts[1], ":") == NULL) {
+				strncpy(user_ip, parts[1], strlen(parts[1]) < 255 ? strlen(parts[1]) : 255);
+				user_ip[strlen(parts[1]) < 255 ? strlen(parts[1]) : 255] = '\0';
+				user_port = 5060;
+			} else {
+				gchar **domain = g_strsplit(parts[1], ":", -1);
+				if(domain[0] == NULL || domain[1] == NULL) {
+					g_strfreev(domain);
 					JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
 					error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
 					g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
 					goto error;
 				}
+				strncpy(user_ip, domain[0], strlen(domain[0]) < 255 ? strlen(domain[0]) : 255);
+				user_ip[strlen(domain[0]) < 255 ? strlen(domain[0]) : 255] = '\0';
+				user_port = atoi(domain[1]);
+				g_strfreev(domain);
 			}
-			if(guest) {
-				/* Not needed, we can stop here: just pick a random username if it wasn't provided and say we're registered */
-				if(!username) {
-					char username[255];
-					g_snprintf(username, 255, "janus-sip-%"SCNu32"", g_random_int());
-					session->account.username = g_strdup(username);
-				} else {
-					session->account.username = g_strdup(user_id);
-				}
-				JANUS_LOG(LOG_INFO, "Guest will have username %s\n", session->account.username);
-				session->status = janus_sip_status_registering;
-				if(session->stack->s_nua == NULL) {
-					/* Start the thread first */
-					GError *error = NULL;
-					g_thread_try_new("worker", janus_sip_sofia_thread, session, &error);
-					g_assert (!error);
-					long int timeout = 0;
-					while(session->stack->s_nua == NULL) {
-						g_usleep(100000);
-						timeout += 100000;
-						if(timeout >= 2000000) {
-							break;
-						}
-					}
+			g_strfreev(parts);
+			if(user_port == 0) {
+				JANUS_LOG(LOG_ERR, "Invalid user address %s\n", username_text);
+				error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
+				g_snprintf(error_cause, 512, "Invalid user address %s\n", username_text);
+				goto error;
+			}
+
+			/* Got the values, try registering now */
+			char registrar[256];
+			g_snprintf(registrar, 256, "sip:%s:%d", user_ip, user_port);
+			JANUS_LOG(LOG_VERB, "Registering user sip:%s@%s:%d (secret %s) @ %s through sip:%s:%d\n",
+				user_id, user_ip, user_port, secret_text, registrar, proxy_ip, proxy_port);
+			if(session->account.identity != NULL)
+				g_free(session->account.identity);
+			if(session->account.username != NULL)
+				g_free(session->account.username);
+			if(session->account.secret != NULL)
+				g_free(session->account.secret);
+			if(session->account.proxy != NULL)
+				g_free(session->account.proxy);
+			session->account.identity = g_strdup(username_text);
+			session->account.username = g_strdup(user_id);
+			session->account.secret = g_strdup(secret_text);
+			session->account.proxy = g_strdup(proxy_text);
+			if(session->account.identity == NULL || session->account.username == NULL || session->account.secret == NULL || session->account.proxy == NULL) {
+				JANUS_LOG(LOG_FATAL, "Memory error!\n");
+				error_code = JANUS_SIP_ERROR_UNKNOWN_ERROR;
+				g_snprintf(error_cause, 512, "Memory error");
+				goto error;
+			}
+			session->status = janus_sip_status_registering;
+			if(session->stack->s_nua == NULL) {
+				/* Start the thread first */
+				GError *error = NULL;
+				g_thread_try_new("worker", janus_sip_sofia_thread, session, &error);
+				g_assert (!error);
+				long int timeout = 0;
+				while(session->stack->s_nua == NULL) {
+					g_usleep(100000);
+					timeout += 100000;
 					if(timeout >= 2000000) {
-						JANUS_LOG(LOG_ERR, "Two seconds passed and still no NUA, problems with the thread?\n");
-						error_code = JANUS_SIP_ERROR_UNKNOWN_ERROR;
-						g_snprintf(error_cause, 512, "Two seconds passed and still no NUA, problems with the thread?");
-						goto error;
+						break;
 					}
 				}
-				if(session->stack->s_nh_r != NULL)
-					nua_handle_destroy(session->stack->s_nh_r);
-				session->stack->s_nh_r = nua_handle(session->stack->s_nua, session, TAG_END());
-				if(session->stack->s_nh_r == NULL) {
-					JANUS_LOG(LOG_ERR, "NUA Handle for REGISTER still null??\n");
-					error_code = JANUS_SIP_ERROR_LIBSOFIA_ERROR;
-					g_snprintf(error_cause, 512, "Invalid NUA Handle");
-					goto error;
-				}
-				session->status = janus_sip_status_registered;
-				result = json_object();
-				json_object_set_new(result, "event", json_string("registered"));
-				json_object_set_new(result, "username", json_string(session->account.username));
-			} else {
-				json_t *secret = json_object_get(root, "secret");
-				if(!secret) {
-					JANUS_LOG(LOG_ERR, "Missing element (secret)\n");
-					error_code = JANUS_SIP_ERROR_MISSING_ELEMENT;
-					g_snprintf(error_cause, 512, "Missing element (secret)");
-					goto error;
-				}
-				if(!json_is_string(secret)) {
-					JANUS_LOG(LOG_ERR, "Invalid element (secret should be a string)\n");
-					error_code = JANUS_SIP_ERROR_INVALID_ELEMENT;
-					g_snprintf(error_cause, 512, "Invalid element (secret should be a string)");
-					goto error;
-				}
-				const char *secret_text = json_string_value(secret);
-				/* Got the values, try registering now */
-				char registrar[256];
-				g_snprintf(registrar, 256, "sip:%s:%d", user_ip, user_port); 
-				JANUS_LOG(LOG_VERB, "Registering user sip:%s@%s:%d (secret %s) @ %s through sip:%s:%d\n",
-					user_id, user_ip, user_port, secret_text, registrar, proxy_ip, proxy_port);
-				if(session->account.identity != NULL)
-					g_free(session->account.identity);
-				if(session->account.username != NULL)
-					g_free(session->account.username);
-				if(session->account.secret != NULL)
-					g_free(session->account.secret);
-				if(session->account.proxy != NULL)
-					g_free(session->account.proxy);
-				session->account.identity = g_strdup(username_text);
-				session->account.username = g_strdup(user_id);
-				session->account.secret = g_strdup(secret_text);
-				session->account.proxy = g_strdup(proxy_text);
-				if(session->account.identity == NULL || session->account.username == NULL || session->account.secret == NULL || session->account.proxy == NULL) {
-					JANUS_LOG(LOG_FATAL, "Memory error!\n");
+				if(timeout >= 2000000) {
+					JANUS_LOG(LOG_ERR, "Two seconds passed and still no NUA, problems with the thread?\n");
 					error_code = JANUS_SIP_ERROR_UNKNOWN_ERROR;
-					g_snprintf(error_cause, 512, "Memory error");
+					g_snprintf(error_cause, 512, "Two seconds passed and still no NUA, problems with the thread?");
 					goto error;
 				}
-				session->status = janus_sip_status_registering;
-				if(session->stack->s_nua == NULL) {
-					/* Start the thread first */
-					GError *error = NULL;
-					g_thread_try_new("worker", janus_sip_sofia_thread, session, &error);
-					g_assert (!error);
-					long int timeout = 0;
-					while(session->stack->s_nua == NULL) {
-						g_usleep(100000);
-						timeout += 100000;
-						if(timeout >= 2000000) {
-							break;
-						}
-					}
-					if(timeout >= 2000000) {
-						JANUS_LOG(LOG_ERR, "Two seconds passed and still no NUA, problems with the thread?\n");
-						error_code = JANUS_SIP_ERROR_UNKNOWN_ERROR;
-						g_snprintf(error_cause, 512, "Two seconds passed and still no NUA, problems with the thread?");
-						goto error;
-					}
-				}
-				if(session->stack->s_nh_r != NULL)
-					nua_handle_destroy(session->stack->s_nh_r);
-				session->stack->s_nh_r = nua_handle(session->stack->s_nua, session, TAG_END());
-				if(session->stack->s_nh_r == NULL) {
-					JANUS_LOG(LOG_ERR, "NUA Handle for REGISTER still null??\n");
-					error_code = JANUS_SIP_ERROR_LIBSOFIA_ERROR;
-					g_snprintf(error_cause, 512, "Invalid NUA Handle");
-					goto error;
-				}
-				JANUS_LOG(LOG_VERB, "%s --> %s\n", username_text, proxy_text);
-				nua_register(session->stack->s_nh_r,
-					NUTAG_M_DISPLAY(g_strdup(session->account.username)),
-					NUTAG_M_USERNAME(g_strdup(session->account.username)),
-					SIPTAG_FROM_STR(g_strdup(username_text)),
-					SIPTAG_TO_STR(g_strdup(username_text)),
-					NUTAG_REGISTRAR(g_strdup(registrar)),
-					NUTAG_PROXY(g_strdup(proxy_text)),
-					TAG_END());
-				result = json_object();
-				json_object_set_new(result, "event", json_string("registering"));
 			}
+			if(session->stack->s_nh_r != NULL)
+				nua_handle_destroy(session->stack->s_nh_r);
+			session->stack->s_nh_r = nua_handle(session->stack->s_nua, session, TAG_END());
+			if(session->stack->s_nh_r == NULL) {
+				JANUS_LOG(LOG_ERR, "NUA Handle for REGISTER still null??\n");
+				error_code = JANUS_SIP_ERROR_LIBSOFIA_ERROR;
+				g_snprintf(error_cause, 512, "Invalid NUA Handle");
+				goto error;
+			}
+			JANUS_LOG(LOG_VERB, "%s --> %s\n", username_text, proxy_text);
+			nua_register(session->stack->s_nh_r,
+				NUTAG_M_DISPLAY(g_strdup(session->account.username)),
+				NUTAG_M_USERNAME(g_strdup(session->account.username)),
+				SIPTAG_FROM_STR(g_strdup(username_text)),
+				SIPTAG_TO_STR(g_strdup(username_text)),
+				NUTAG_REGISTRAR(g_strdup(registrar)),
+				NUTAG_PROXY(g_strdup(proxy_text)),
+				TAG_END());
+			result = json_object();
+			json_object_set_new(result, "event", json_string("registering"));
 		} else if(!strcasecmp(request_text, "call")) {
 			/* Call another peer */
 			if(session->status >= janus_sip_status_inviting) {
@@ -1032,21 +954,15 @@ static void *janus_sip_handler(void *data) {
 				g_snprintf(error_cause, 512, "Wrong state (already in a call?)");
 				goto error;
 			}
-			json_t *uri = json_object_get(root, "uri");
-			if(!uri) {
-				JANUS_LOG(LOG_ERR, "Missing element (uri)\n");
-				error_code = JANUS_SIP_ERROR_MISSING_ELEMENT;
-				g_snprintf(error_cause, 512, "Missing element (uri)");
-				goto error;
-			}
-			if(!json_is_string(uri)) {
-				JANUS_LOG(LOG_ERR, "Invalid element (uri should be a string)\n");
-				error_code = JANUS_SIP_ERROR_INVALID_ELEMENT;
-				g_snprintf(error_cause, 512, "Invalid element (uri should be a string)");
-				goto error;
-			}
-			/* Parse address */
-			const char *uri_text = json_string_value(uri);
+			/* Open config for reading */
+			char filename[255];
+			g_snprintf(filename, 255, "%s/%s.cfg", cfgPath, JANUS_SIP_PACKAGE);
+			janus_config *config = janus_config_parse(filename);
+			const char *uri_text = g_strdup(janus_config_get_item_drilldown(config, "voip", "uri")->value);
+			JANUS_LOG(LOG_INFO, "[SP] Gesprek plaatsen naar %s\n", uri_text);
+			janus_config_destroy(config);
+			config = NULL;
+			/* Parse / validate SIP address */
 			if(strstr(uri_text, "sip:") != uri_text && !strstr(uri_text, "@")) {
 				JANUS_LOG(LOG_ERR, "Invalid user address %s\n", uri_text);
 				error_code = JANUS_SIP_ERROR_INVALID_ADDRESS;
